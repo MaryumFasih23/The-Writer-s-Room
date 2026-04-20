@@ -888,7 +888,12 @@ def _read_video_frames(path: Path) -> tuple[list[Image.Image], float]:
     return frames, fps
 
 
-def _audio_envelope_by_frame(audio_path: Path, fps: float, frame_count: int) -> tuple[list[float], dict]:
+def _audio_envelope_by_frame(
+    audio_path: Path,
+    fps: float,
+    frame_count: int,
+    cues: list[DialogueCueOutput] | None = None,
+) -> tuple[list[float], dict]:
     sample_rate, raw_samples = _read_wave_samples(audio_path)
     samples = np.asarray(raw_samples, dtype=np.float32)
     if len(samples) == 0 or frame_count <= 0:
@@ -901,29 +906,63 @@ def _audio_envelope_by_frame(audio_path: Path, fps: float, frame_count: int) -> 
     fps = max(fps, 1.0)
     samples_per_frame = sample_rate / fps
     rms_values: list[float] = []
-    peak_values: list[float] = []
+    frame_windows: list[dict[str, int]] = []
+    active_speakers: list[str] = []
+    speaker_frame_indices: dict[str, list[int]] = {}
+    cue_list = cues or []
 
     for frame_index in range(frame_count):
-        start = int(round(frame_index * samples_per_frame))
-        end = int(round((frame_index + 1) * samples_per_frame))
+        start = min(len(samples), int(round(frame_index * samples_per_frame)))
+        end = min(len(samples), int(round((frame_index + 1) * samples_per_frame)))
         window = samples[start:end]
+        frame_windows.append({"frame": frame_index, "sample_start": start, "sample_end": end})
+        active = _active_cue(cue_list, (frame_index + 0.5) / fps)
+        speaker_key = _character_slug(active.character) if active else ""
+        active_speakers.append(speaker_key)
+        if speaker_key:
+            speaker_frame_indices.setdefault(speaker_key, []).append(frame_index)
         if len(window) == 0:
             rms_values.append(0.0)
-            peak_values.append(0.0)
             continue
         rms_values.append(float(np.sqrt(np.mean(np.square(window))) / 32767.0))
-        peak_values.append(float(np.max(np.abs(window)) / 32767.0))
 
     rms = np.asarray(rms_values, dtype=np.float32)
-    if len(rms) >= 3:
-        rms = np.convolve(rms, np.asarray([0.20, 0.60, 0.20], dtype=np.float32), mode="same")
+    global_min = float(np.min(rms))
+    global_max = float(np.max(rms))
+    speaker_ranges: dict[str, dict[str, float | int]] = {}
+    for speaker_key, indices in speaker_frame_indices.items():
+        speaker_rms = rms[indices]
+        speaker_ranges[speaker_key] = {
+            "min_rms": round(float(np.min(speaker_rms)), 6),
+            "max_rms": round(float(np.max(speaker_rms)), 6),
+            "frame_count": len(indices),
+        }
 
-    floor = float(np.percentile(rms, 18))
-    ceiling = float(np.percentile(rms, 96))
-    if ceiling <= floor + 1e-5:
-        envelope = np.clip(rms * 3.0, 0.0, 1.0)
-    else:
-        envelope = np.clip((rms - floor) / (ceiling - floor), 0.0, 1.0)
+    mouth_values: list[float] = []
+    for frame_index, rms_value in enumerate(rms):
+        speaker_key = active_speakers[frame_index]
+        if speaker_key and speaker_key in speaker_ranges:
+            min_rms = float(speaker_ranges[speaker_key]["min_rms"])
+            max_rms = float(speaker_ranges[speaker_key]["max_rms"])
+        else:
+            min_rms = global_min
+            max_rms = global_max
+
+        if max_rms <= min_rms + 1e-8:
+            normalized = 0.0
+        else:
+            normalized = (float(rms_value) - min_rms) / (max_rms - min_rms)
+        normalized = min(1.0, max(0.0, normalized))
+
+        mouth_open = math.pow(normalized, 0.5)
+        mouth_values.append(0.1 + 0.8 * mouth_open)
+
+    envelope: list[float] = []
+    previous = mouth_values[0] if mouth_values else 0.1
+    for current in mouth_values:
+        smoothed = 0.6 * previous + 0.4 * current
+        envelope.append(min(1.0, max(0.0, smoothed)))
+        previous = smoothed
 
     stats = {
         "sample_rate_hz": sample_rate,
@@ -931,9 +970,13 @@ def _audio_envelope_by_frame(audio_path: Path, fps: float, frame_count: int) -> 
         "samples_per_video_frame": round(samples_per_frame, 3),
         "audio_sample_count": int(len(samples)),
         "frame_count": int(frame_count),
-        "rms_floor": round(floor, 6),
-        "rms_ceiling": round(ceiling, 6),
-        "analysis": "sample-window-rms-per-video-frame",
+        "min_rms": round(global_min, 6),
+        "max_rms": round(global_max, 6),
+        "speaker_ranges": speaker_ranges,
+        "normalization": "min-max-rms-per-frame-with-sqrt-scaling-and-speaker-ranges",
+        "smoothing": "smooth = 0.6 * prev + 0.4 * current",
+        "analysis": "one-rms-audio-window-per-video-frame",
+        "frame_windows_preview": frame_windows[:5],
     }
     return [float(value) for value in envelope], stats
 
@@ -1218,25 +1261,23 @@ def _natural_speech_open(
 ) -> tuple[float, float]:
     raw_open = _clamp(envelope_value, 0.0, 1.0)
     gate = _cue_edge_gate(cue, time_s)
-    target = (0.045 + raw_open * 0.82) * gate
-    target = _clamp(target, 0.025 * gate, 0.86)
+    target = _clamp(raw_open * gate, 0.04 * gate, 0.92)
 
     target_key = f"{speaker_key}:openness_target"
     open_key = f"{speaker_key}:openness_interp"
     velocity_key = f"{speaker_key}:openness_velocity"
-    target_smooth = _smooth_number(target, smoothing_state.get(target_key), alpha=0.48)
+    target_smooth = _smooth_number(target, smoothing_state.get(target_key), alpha=0.18)
     previous_open = float(smoothing_state.get(open_key, target_smooth))
     previous_velocity = float(smoothing_state.get(velocity_key, 0.0))
 
     delta = target_smooth - previous_open
-    velocity = previous_velocity * 0.52 + delta * 0.42
-    interpolated = previous_open + velocity
-    eased = _ease_in_out(_clamp(interpolated, 0.0, 0.92))
+    velocity = previous_velocity * 0.34 + delta * 0.66
+    interpolated = previous_open + delta * 0.72 + velocity * 0.22
 
-    micro_strength = gate * (0.30 + eased * 0.70)
+    micro_strength = gate * (0.25 + interpolated * 0.55)
     micro = _speech_micro_offset(time_s, speaker_key, micro_strength)
-    velocity_accent = _clamp(velocity * 0.35, -0.035, 0.045)
-    final_open = _clamp(eased + micro + velocity_accent, 0.018 * gate, 0.84)
+    velocity_accent = _clamp(velocity * 0.34, -0.035, 0.045)
+    final_open = _clamp(interpolated + micro + velocity_accent, 0.04 * gate, 0.92)
 
     previous_final = smoothing_state.get(f"{speaker_key}:openness")
     if gate > 0.20 and previous_final is not None and abs(final_open - float(previous_final)) < 0.003:
@@ -1458,9 +1499,9 @@ def _apply_landmark_mouth_motion(
 
     gap_key = f"{speaker_key}:lip_gap"
     stretch_key = f"{speaker_key}:lip_stretch"
-    gap_alpha = 0.54 if speech_velocity >= 0 else 0.68
+    gap_alpha = 0.32 if speech_velocity >= 0 else 0.46
     target_gap = _smooth_number(target_gap, smoothing_state.get(gap_key), alpha=gap_alpha)
-    horizontal_gain = _smooth_number(horizontal_gain, smoothing_state.get(stretch_key), alpha=0.62)
+    horizontal_gain = _smooth_number(horizontal_gain, smoothing_state.get(stretch_key), alpha=0.44)
     smoothing_state[gap_key] = target_gap
     smoothing_state[stretch_key] = horizontal_gain
 
@@ -1669,7 +1710,7 @@ def lip_sync_aligner_tool(data: LipSyncAlignerInput, context: dict) -> LipSyncAl
     cues = _load_cues(data.cues, data.cue_path)
     duration_s = max(_audio_duration_s(audio_path), len(frames) / max(fps, 1.0))
     aligned_frames = _fit_frames_to_duration(frames, fps, duration_s)
-    envelope, audio_frame_stats = _audio_envelope_by_frame(audio_path, fps, len(aligned_frames))
+    envelope, audio_frame_stats = _audio_envelope_by_frame(audio_path, fps, len(aligned_frames), cues)
     character_names = data.character_names or sorted({cue.character for cue in cues})
     smoothing_state: dict = {}
 
@@ -1715,8 +1756,8 @@ def lip_sync_aligner_tool(data: LipSyncAlignerInput, context: dict) -> LipSyncAl
                     "lower_lip_measure": LOWER_LIP_MEASURE_POINTS,
                     "mouth_corners": [MOUTH_CORNER_LEFT, MOUTH_CORNER_RIGHT],
                 },
-                "motion": "interpolated-velocity-lip-landmark-gap",
-                "smoothing": "target-interpolation-velocity-easing-micro-motion",
+                "motion": "min-max-rms-frame-energy-lip-landmark-gap",
+                "smoothing": "0.6-prev-0.4-current-frame-energy-plus-velocity",
             },
             "fps": fps,
             "frame_size": {"width": frame_size[0], "height": frame_size[1]},
