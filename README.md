@@ -1,3 +1,5 @@
+# The-Writer-s-Room
+Autonomous Story and Image Generation Layer
 # PROJECT MONTAGE - Phase 1
 
 This repository implements the "Writer's Room" phase from the assignment as a complete, runnable Python project.
