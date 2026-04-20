@@ -1,0 +1,25 @@
+{
+  "title": "A Young Robotics Engineer Returns",
+  "characters": [
+    {
+      "name": "Mira",
+      "personality_traits": [
+        "observant",
+        "resilient",
+        "inventive"
+      ],
+      "age_descriptor": "young adult",
+      "gender_presentation": "woman",
+      "appearance_description": "Mira has a cinematic live-action look, distinct facial detail, dark technical coat with functional layers and storm-ready details, set against industrial coastal harbor with wet steel docks and storm-heavy skies, with intent gaze, thoughtful posture, and contained restless energy.",
+      "wardrobe": "dark technical coat with functional layers and storm-ready details",
+      "environment_hint": "industrial coastal harbor with wet steel docks and storm-heavy skies",
+      "body_language": "intent gaze, thoughtful posture, and contained restless energy",
+      "reference_style": "Mira: cinematic portrait, close-up to mid-shot framing, industrial coastal harbor with wet steel docks and storm-heavy skies, soft key light, rim light, realistic skin detail, dramatic shadows, expressive body language",
+      "source_scenes": [
+        1,
+        2,
+        3
+      ]
+    }
+  ]
+}

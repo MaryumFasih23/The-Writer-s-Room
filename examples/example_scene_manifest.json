@@ -1,0 +1,34 @@
+{
+  "title": "A Young Robotics Engineer Returns",
+  "premise": "A young robotics engineer returns to her coastal hometown and teams up with her estranged brother to stop an experimental storm-harvesting tower from tearing the harbor apart.",
+  "mode": "prompt",
+  "scenes": [
+    {
+      "scene_number": 1,
+      "heading": "EXT. COASTAL HARBOR - SUNSET",
+      "summary": "Mira returns home and confronts the emotional weight of the harbor she left behind.",
+      "action": [
+        "Mira steps off a weather-beaten ferry carrying a compact robotics case.",
+        "Fishing boats sway under a sky flashing with distant energy from the storm-harvesting tower.",
+        "A reminder from memory lingers: No prior memory context available."
+      ],
+      "dialogue": [
+        {
+          "character": "Mira",
+          "text": "I told myself I came back for the town, not for the ghosts in it.",
+          "emotion": "guarded"
+        },
+        {
+          "character": "Rowan",
+          "text": "Then stop staring at the tower and help me keep this harbor standing.",
+          "emotion": "challenging"
+        }
+      ],
+      "visual_cues": [
+        "Orange sunset reflecting on metallic water.",
+        "Electrical arcs pulse around the distant tower.",
+        "Wind catches loose harbor tarps and cables."
+      ]
+    }
+  ]
+}
