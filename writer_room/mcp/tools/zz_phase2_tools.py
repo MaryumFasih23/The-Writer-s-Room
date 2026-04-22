@@ -1394,6 +1394,7 @@ def _draw_landmark_lips(
     face_pixels: list[tuple[float, float]],
     target_gap: float,
     measured_gap: float,
+    baseline_gap: float,
     horizontal_gain: float,
 ) -> Image.Image:
     left_corner = face_pixels[MOUTH_CORNER_LEFT]
@@ -1403,7 +1404,9 @@ def _draw_landmark_lips(
     lower_center = _mean_point([face_pixels[index] for index in LOWER_LIP_MEASURE_POINTS])
     origin = _mean_point([upper_center, lower_center, left_corner, right_corner])
     half_width = corner_width / 2.0
-    open_delta = max(-measured_gap * 0.45, target_gap - measured_gap)
+    relative_measured_gap = max(0.0, measured_gap - baseline_gap)
+    relative_target_gap = max(0.0, target_gap - baseline_gap)
+    open_delta = max(-max(1.0, relative_measured_gap) * 0.65, relative_target_gap - relative_measured_gap)
 
     upper_inner = _transform_lip_curve(
         [face_pixels[index] for index in UPPER_LIP_INNER_CURVE],
@@ -1449,7 +1452,7 @@ def _draw_landmark_lips(
     lip_color = _sample_lip_color(frame, [face_pixels[index] for index in OUTER_LIP_LANDMARKS])
     lip_shadow = tuple(max(0, int(channel * 0.64)) for channel in lip_color)
     lip_highlight = tuple(min(255, int(channel * 1.22 + 16)) for channel in lip_color)
-    open_ratio = min(1.0, max(0.0, target_gap / max(1.0, corner_width * 0.24)))
+    open_ratio = min(1.0, max(0.0, relative_target_gap / max(1.0, corner_width * 0.18)))
 
     overlay = Image.new("RGBA", frame.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay, "RGBA")
@@ -1495,7 +1498,20 @@ def _apply_landmark_mouth_motion(
     lower_lip = _mean_point([face_pixels[index] for index in LOWER_LIP_MEASURE_POINTS])
     measured_gap = _point_distance(upper_lip, lower_lip)
     corner_width = _point_distance(face_pixels[MOUTH_CORNER_LEFT], face_pixels[MOUTH_CORNER_RIGHT])
-    target_gap, horizontal_gain = _lip_viseme_targets(vowel, speech_open, speech_velocity, corner_width, measured_gap)
+    baseline_key = f"{speaker_key}:baseline_gap"
+    baseline_gap = float(smoothing_state.get(baseline_key, measured_gap))
+    if baseline_key not in smoothing_state:
+        smoothing_state[baseline_key] = baseline_gap
+
+    relative_open = max(0.0, measured_gap - baseline_gap)
+    relative_open_key = f"{speaker_key}:relative_open"
+    relative_open = _smooth_number(relative_open, smoothing_state.get(relative_open_key), alpha=0.55)
+    smoothing_state[relative_open_key] = relative_open
+    normalized_relative_open = _clamp(relative_open / max(1.0, corner_width * 0.12), 0.0, 1.0)
+    audio_relative_open = _clamp((speech_open - 0.1) / 0.8, 0.0, 1.0)
+    effective_open = max(audio_relative_open, normalized_relative_open)
+
+    target_gap, horizontal_gain = _lip_viseme_targets(vowel, effective_open, speech_velocity, corner_width, baseline_gap)
 
     gap_key = f"{speaker_key}:lip_gap"
     stretch_key = f"{speaker_key}:lip_stretch"
@@ -1505,7 +1521,7 @@ def _apply_landmark_mouth_motion(
     smoothing_state[gap_key] = target_gap
     smoothing_state[stretch_key] = horizontal_gain
 
-    return _draw_landmark_lips(frame, face_pixels, target_gap, measured_gap, horizontal_gain)
+    return _draw_landmark_lips(frame, face_pixels, target_gap, measured_gap, baseline_gap, horizontal_gain)
 
 
 def _mediapipe_lip_sync_frame(
@@ -1756,8 +1772,9 @@ def lip_sync_aligner_tool(data: LipSyncAlignerInput, context: dict) -> LipSyncAl
                     "lower_lip_measure": LOWER_LIP_MEASURE_POINTS,
                     "mouth_corners": [MOUTH_CORNER_LEFT, MOUTH_CORNER_RIGHT],
                 },
-                "motion": "min-max-rms-frame-energy-lip-landmark-gap",
-                "smoothing": "0.6-prev-0.4-current-frame-energy-plus-velocity",
+                "motion": "baseline-normalized-rms-frame-energy-lip-landmark-gap",
+                "smoothing": "0.6-prev-0.4-current-frame-energy-plus-relative-mouth-smoothing",
+                "baseline": "first-detected-mouth-gap-per-character",
             },
             "fps": fps,
             "frame_size": {"width": frame_size[0], "height": frame_size[1]},
